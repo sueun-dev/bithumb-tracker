@@ -1,0 +1,263 @@
+/* Professional Dark Mode Design System */
+:root {
+  /* Light Theme Variables */
+  --primary: #1a73e8;
+  --primary-dark: #1557b0;
+  --primary-light: #e8f0fe;
+  --primary-rgb: 26, 115, 232;
+
+  --success: #0f9d58;
+  --success-light: #e6f7ed;
+  --success-rgb: 15, 157, 88;
+
+  --danger: #ea4335;
+  --danger-light: #fce8e6;
+  --danger-rgb: 234, 67, 53;
+
+  --warning: #fbbc04;
+  --warning-light: #fef7e0;
+  --warning-rgb: 251, 188, 4;
+
+  --neutral: #6c757d;
+  --neutral-light: #f8f9fa;
+  --neutral-rgb: 108, 117, 125;
+
+  /* Light Theme Colors */
+  --text-primary: #1a1a1a;
+  --text-secondary: #5f6368;
+  --text-muted: #80868b;
+  --text-inverse: #ffffff;
+
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --bg-elevated: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-overlay: rgba(32, 33, 36, 0.1);
+
+  --border-light: #e8eaed;
+  --border-medium: #dadce0;
+  --border-strong: #5f6368;
+
+  --shadow-sm: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+  --shadow-md: 0 1px 3px 0 rgba(60,64,67,0.3), 0 4px 8px 3px rgba(60,64,67,0.15);
+  --shadow-lg: 0 4px 6px -1px rgba(60,64,67,0.3), 0 10px 15px -3px rgba(60,64,67,0.15);
+  --shadow-xl: 0 10px 25px -5px rgba(60,64,67,0.3), 0 20px 25px -5px rgba(60,64,67,0.15);
+
+  /* Professional Trading Platform Gradients */
+  --gradient-primary: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  --gradient-success: linear-gradient(135deg, var(--success) 0%, #0d8043 100%);
+  --gradient-danger: linear-gradient(135deg, var(--danger) 0%, #c5221f 100%);
+  --gradient-surface: linear-gradient(135deg, var(--bg-elevated) 0%, var(--bg-secondary) 100%);
+
+  /* Glass Morphism */
+  --glass-bg: rgba(255, 255, 255, 0.95);
+  --glass-border: rgba(255, 255, 255, 0.2);
+  --glass-backdrop: blur(12px);
+
+  /* Animation & Transitions */
+  --transition-fast: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+  /* Spacing */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Typography */
+  --font-family-base: 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-family-mono: 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+  --font-weight-light: 300;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+}
+
+/* Dark Theme Variables */
+[data-theme="dark"] {
+  /* Dark Theme Colors */
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0a6;
+  --text-muted: #5f6368;
+  --text-inverse: #1a1a1a;
+
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-elevated: #21262d;
+  --bg-surface: #30363d;
+  --bg-overlay: rgba(255, 255, 255, 0.1);
+
+  --border-light: #30363d;
+  --border-medium: #21262d;
+  --border-strong: #6e7681;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.5), 0 1px 3px 1px rgba(0,0,0,0.3);
+  --shadow-md: 0 1px 3px 0 rgba(0,0,0,0.5), 0 4px 8px 3px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 6px -1px rgba(0,0,0,0.5), 0 10px 15px -3px rgba(0,0,0,0.3);
+  --shadow-xl: 0 10px 25px -5px rgba(0,0,0,0.5), 0 20px 25px -5px rgba(0,0,0,0.3);
+
+  /* Professional Dark Trading Platform Colors */
+  --primary-light: #1e3a8a20;
+  --success-light: #0f9d5820;
+  --danger-light: #ea433520;
+  --warning-light: #fbbc0420;
+  --neutral-light: #161b22;
+
+  /* Dark Theme Gradients */
+  --gradient-surface: linear-gradient(135deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
+
+  /* Dark Glass Morphism */
+  --glass-bg: rgba(13, 17, 23, 0.95);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+/* Auto Theme Detection */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    /* Same as dark theme variables */
+    --text-primary: #e8eaed;
+    --text-secondary: #9aa0a6;
+    --text-muted: #5f6368;
+    --text-inverse: #1a1a1a;
+
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-elevated: #21262d;
+    --bg-surface: #30363d;
+    --bg-overlay: rgba(255, 255, 255, 0.1);
+
+    --border-light: #30363d;
+    --border-medium: #21262d;
+    --border-strong: #6e7681;
+
+    --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.5), 0 1px 3px 1px rgba(0,0,0,0.3);
+    --shadow-md: 0 1px 3px 0 rgba(0,0,0,0.5), 0 4px 8px 3px rgba(0,0,0,0.3);
+    --shadow-lg: 0 4px 6px -1px rgba(0,0,0,0.5), 0 10px 15px -3px rgba(0,0,0,0.3);
+    --shadow-xl: 0 10px 25px -5px rgba(0,0,0,0.5), 0 20px 25px -5px rgba(0,0,0,0.3);
+
+    --primary-light: #1e3a8a20;
+    --success-light: #0f9d5820;
+    --danger-light: #ea433520;
+    --warning-light: #fbbc0420;
+    --neutral-light: #161b22;
+
+    --gradient-surface: linear-gradient(135deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
+    --glass-bg: rgba(13, 17, 23, 0.95);
+    --glass-border: rgba(255, 255, 255, 0.1);
+  }
+}
+
+/* Professional Base Styling */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-family-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  transition: var(--transition-base);
+  min-height: 100vh;
+}
+
+/* Professional Code Styling */
+code {
+  font-family: var(--font-family-mono);
+  background: var(--bg-surface);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  font-size: 0.875em;
+}
+
+/* Professional Selection Colors */
+::selection {
+  background: rgba(var(--primary-rgb), 0.3);
+  color: var(--text-primary);
+}
+
+::-moz-selection {
+  background: rgba(var(--primary-rgb), 0.3);
+  color: var(--text-primary);
+}
+
+/* Professional Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Professional Focus Outline */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Remove default focus outlines for mouse users */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Professional Disabled State */
+:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Professional Loading States */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Professional Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
