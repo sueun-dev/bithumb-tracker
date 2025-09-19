@@ -63,71 +63,7 @@ const ThemeToggle: React.FC<{ theme: 'light' | 'dark'; onToggle: () => void }> =
   );
 };
 
-const DIRECT_FETCH_LIMIT = 40;
-const DIRECT_REFRESH_INTERVAL = 60_000;
-
-async function fetchJson(url: string) {
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'application/json'
-    }
-  });
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-  return response.json();
-}
-
-async function fetchCoinDetailDirect(coin: any): Promise<CoinData | null> {
-  const symbol = coin.coinSymbol;
-  const code = coin.coinType;
-  const coinData: CoinData = {
-    symbol,
-    code,
-    name_kr: coin.coinName,
-    name_en: coin.coinNameEn,
-    circulation: null,
-    circulation_change: null,
-    holders: null,
-    holder_influence: null,
-    trader_influence: null
-  };
-
-  try {
-    const [circulation, holders, holderShare, traderShare] = await Promise.allSettled([
-      fetchJson(`https://gw.bithumb.com/exchange/v1/trade/accumulation/deposit/${code}-C0100`),
-      fetchJson(`https://gw.bithumb.com/exchange/v1/trade/holders/${code}`),
-      fetchJson(`https://gw.bithumb.com/exchange/v1/trade/top/holder/share/${code}`),
-      fetchJson(`https://gw.bithumb.com/exchange/v1/trade/top/trader/share/${code}`)
-    ]);
-
-    if (circulation.status === 'fulfilled' && circulation.value?.data?.data) {
-      const d = circulation.value.data.data;
-      coinData.circulation = d.accumulationDepositAmt ?? null;
-      coinData.circulation_change = d.depositChangeRate ?? null;
-    }
-
-    if (holders.status === 'fulfilled' && holders.value?.data?.data) {
-      const d = holders.value.data.data;
-      coinData.holders = d.numberOfHolders ?? null;
-    }
-
-    if (holderShare.status === 'fulfilled' && holderShare.value?.data?.data) {
-      const d = holderShare.value.data.data;
-      coinData.holder_influence = d.holdingPercentage ?? null;
-    }
-
-    if (traderShare.status === 'fulfilled' && traderShare.value?.data?.data) {
-      const d = traderShare.value.data.data;
-      coinData.trader_influence = d.tradingPercentage ?? null;
-    }
-
-    return coinData;
-  } catch (error) {
-    // Silently handle error in production
-    return null;
-  }
-}
+// Direct API calls removed - server handles all data fetching
 
 function App() {
   // Theme Management
@@ -143,8 +79,6 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 30;
   const [selectedCoin, setSelectedCoin] = useState<CoinData | null>(null);
-  const directIntervalRef = React.useRef<number | null>(null);
-  const [isDirectMode, setIsDirectMode] = useState(false);
 
   const formatNumber = (num: string | null) => {
     if (!num) return '-';
@@ -164,48 +98,6 @@ function App() {
     );
   };
 
-  const stopDirectPolling = useCallback(() => {
-    if (directIntervalRef.current !== null) {
-      clearInterval(directIntervalRef.current);
-      directIntervalRef.current = null;
-    }
-    setIsDirectMode(false);
-  }, []);
-
-  const fetchLiveCoinsDirect = useCallback(async () => {
-    try {
-      const response = await fetchJson('https://gw.bithumb.com/exchange/v1/comn/intro?coinType=&marketType=C0100');
-      const coinList: any[] = response?.data?.data?.coinList ?? [];
-      const limited = coinList.slice(0, DIRECT_FETCH_LIMIT);
-
-      const next: Record<string, CoinData> = {};
-      for (const coin of limited) {
-        const detail = await fetchCoinDetailDirect(coin);
-        if (detail) {
-          next[detail.symbol] = detail;
-        }
-      }
-
-      if (Object.keys(next).length === 0) {
-        throw new Error('No coin data resolved');
-      }
-
-      setCoins(next);
-      setLastUpdate(new Date());
-      setLoading(false);
-    } catch (error) {
-      // Silently handle error in production
-      setLoading(false);
-    }
-  }, []);
-
-  const startDirectPolling = useCallback(() => {
-    if (directIntervalRef.current !== null) return;
-    setIsDirectMode(true);
-    fetchLiveCoinsDirect();
-    directIntervalRef.current = window.setInterval(fetchLiveCoinsDirect, DIRECT_REFRESH_INTERVAL);
-  }, [fetchLiveCoinsDirect]);
-
   const fetchData = useCallback(() => {
     // Use relative URL for production compatibility
     const apiUrl = window.location.hostname === 'localhost'
@@ -216,7 +108,6 @@ function App() {
     eventSource.onmessage = (event) => {
       try {
         const coinData = JSON.parse(event.data);
-        stopDirectPolling();
         setCoins(prev => ({
           ...prev,
           [coinData.symbol]: coinData
@@ -229,23 +120,22 @@ function App() {
     };
 
     eventSource.onerror = () => {
-      // Silently handle stream error and fallback to direct polling
+      // Server connection error - data will be loaded from server cache
       eventSource.close();
-      startDirectPolling();
+      setLoading(false);
     };
 
     return () => {
       eventSource.close();
     };
-  }, [startDirectPolling, stopDirectPolling]);
+  }, []);
 
   useEffect(() => {
     const cleanup = fetchData();
     return () => {
       cleanup?.();
-      stopDirectPolling();
     };
-  }, [fetchData, stopDirectPolling]);
+  }, [fetchData]);
 
   const handleSort = (key: keyof CoinData) => {
     if (sortKey === key) {
@@ -337,7 +227,7 @@ function App() {
               </div>
               <div className="connection-status">
                 <span className="status-dot"></span>
-                {isDirectMode ? '직접 API' : '실시간'}: {Object.keys(coins).length}개 코인
+                실시간: {Object.keys(coins).length}개 코인
               </div>
             </div>
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
@@ -416,7 +306,7 @@ function App() {
                     <span>{formatNumber(coin.holders)}명</span>
                     {coin.holders_change && (
                       <span className={`change-indicator ${Number(coin.holders_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        {Number(coin.holders_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holders_change.absolute)}명 ({coin.holders_change.percent}%)
+                        30분전 대비 {Number(coin.holders_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holders_change.absolute).toLocaleString('ko-KR')}명 ({coin.holders_change.percent}%)
                       </span>
                     )}
                   </div>
@@ -426,7 +316,7 @@ function App() {
                     <span>{formatNumber(coin.circulation)}</span>
                     {coin.circulation_30min_change && (
                       <span className={`change-indicator ${Number(coin.circulation_30min_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        {Number(coin.circulation_30min_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.circulation_30min_change.absolute).toLocaleString('ko-KR')} ({coin.circulation_30min_change.percent}%)
+                        30분전 대비 {Number(coin.circulation_30min_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.circulation_30min_change.absolute).toLocaleString('ko-KR')} ({coin.circulation_30min_change.percent}%)
                       </span>
                     )}
                   </div>
@@ -437,7 +327,7 @@ function App() {
                     <span>{coin.holder_influence ? `${coin.holder_influence}%` : '-'}</span>
                     {coin.holder_influence_change && (
                       <span className={`change-indicator ${Number(coin.holder_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        {Number(coin.holder_influence_change.percent) > 0 ? '↑' : '↓'} {coin.holder_influence_change.percent}%
+                        30분전 대비 {Number(coin.holder_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holder_influence_change.absolute).toFixed(2)}%p ({coin.holder_influence_change.percent}%)
                       </span>
                     )}
                   </div>
@@ -447,7 +337,7 @@ function App() {
                     <span>{coin.trader_influence ? `${coin.trader_influence}%` : '-'}</span>
                     {coin.trader_influence_change && (
                       <span className={`change-indicator ${Number(coin.trader_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        {Number(coin.trader_influence_change.percent) > 0 ? '↑' : '↓'} {coin.trader_influence_change.percent}%
+                        30분전 대비 {Number(coin.trader_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.trader_influence_change.absolute).toFixed(2)}%p ({coin.trader_influence_change.percent}%)
                       </span>
                     )}
                   </div>
