@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const fs = require('fs');
 const path = require('path');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -209,11 +210,7 @@ function createServer(options = {}) {
       },
     },
     crossOriginEmbedderPolicy: false,  // For SSE
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true
-    },
+    hsts: false, // HTTPS는 선택적으로 사용 (자체 서명 인증서 지원)
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     permittedCrossDomainPolicies: false
   }));
@@ -876,13 +873,18 @@ function createServer(options = {}) {
     }
   });
 
-  app.get('/',
+  // Catch-all route for React app - must be after all API routes
+  app.get('*',
     rateLimit({
       windowMs: 1 * 60 * 1000,
       max: 30,  // Health checks can be more frequent
     }),
     (req, res) => {
-    res.send('Server running');
+    if (NODE_ENV === 'production' && fs.existsSync(path.join(__dirname, 'build', 'index.html'))) {
+      res.sendFile(path.join(__dirname, 'build', 'index.html'));
+    } else {
+      res.send('Server running');
+    }
   });
 
   // Circuit breaker for upstream API protection
@@ -1000,15 +1002,53 @@ if (require.main === module) {
   const serverInstance = createServer();
   serverInstance.initializeData();
 
+  // HTTP 서버
   const server = serverInstance.app.listen(PORT, HOST, () => {
-    console.log(`Running on http://${HOST}:${PORT}`);
+    console.log(`📡 HTTP Server running on http://${HOST}:${PORT}`);
   });
 
-  process.on('SIGINT', () => {
-    console.log('\n🛑 Server shutting down...');
-    serverInstance.shutdown();
-    server.close(() => process.exit(0));
-  });
+  // HTTPS 서버 (프로덕션 환경에서만)
+  if (NODE_ENV === 'production') {
+    try {
+      // 자체 서명 인증서 경로 (GCP 서버에서 생성해야 함)
+      const httpsOptions = {
+        key: fs.readFileSync('/etc/ssl/certs/bithumb/server.key'),
+        cert: fs.readFileSync('/etc/ssl/certs/bithumb/server.crt')
+      };
+
+      const httpsServer = https.createServer(httpsOptions, serverInstance.app).listen(443, HOST, () => {
+        console.log(`🔒 HTTPS Server running on https://${HOST}:443`);
+      });
+
+      process.on('SIGINT', () => {
+        console.log('\n🛑 Servers shutting down...');
+        serverInstance.shutdown();
+        server.close();
+        httpsServer.close(() => process.exit(0));
+      });
+    } catch (err) {
+      console.log('⚠️  HTTPS 인증서를 찾을 수 없음. HTTP만 실행됩니다.');
+      console.log('   인증서 생성 방법:');
+      console.log('   sudo mkdir -p /etc/ssl/certs/bithumb');
+      console.log('   sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \\');
+      console.log('     -keyout /etc/ssl/certs/bithumb/server.key \\');
+      console.log('     -out /etc/ssl/certs/bithumb/server.crt \\');
+      console.log('     -subj "/C=KR/ST=Seoul/L=Seoul/O=Bithumb/CN=34.44.60.202" \\');
+      console.log('     -addext "subjectAltName=IP:34.44.60.202"');
+
+      process.on('SIGINT', () => {
+        console.log('\n🛑 Server shutting down...');
+        serverInstance.shutdown();
+        server.close(() => process.exit(0));
+      });
+    }
+  } else {
+    process.on('SIGINT', () => {
+      console.log('\n🛑 Server shutting down...');
+      serverInstance.shutdown();
+      server.close(() => process.exit(0));
+    });
+  }
 }
 
 module.exports = {
