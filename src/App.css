@@ -15,39 +15,34 @@
 }
 
 .change-indicator {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  display: block;
+  margin-top: 4px;
+  opacity: 0.85;
   transition: all 0.3s ease;
   animation: slideIn 0.5s ease-out;
 }
 
 .change-indicator.positive {
   color: #16a34a;
-  background: rgba(34, 197, 94, 0.1);
-  border: 1px solid rgba(34, 197, 94, 0.2);
+  font-size: 10px;
 }
 
 .change-indicator.negative {
   color: #dc2626;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  font-size: 10px;
 }
 
 [data-theme="dark"] .change-indicator.positive {
   color: #4ade80;
-  background: rgba(74, 222, 128, 0.1);
-  border: 1px solid rgba(74, 222, 128, 0.2);
+  font-size: 10px;
 }
 
 [data-theme="dark"] .change-indicator.negative {
   color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.2);
+  font-size: 10px;
 }
 
 .last-update-time {

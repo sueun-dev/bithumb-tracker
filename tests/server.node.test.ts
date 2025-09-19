@@ -146,7 +146,7 @@ describe('server createServer', () => {
     expect(res.body.comparison.price_change).toBeCloseTo(100);
   });
 
-  it('streams cached and live data via SSE', async () => {
+  it('streams cached data via SSE when cache exists', async () => {
     const cached = { symbol: 'BTC', code: 'BTC' } as any;
     const live = { symbol: 'ETH', code: 'ETH' } as any;
 
@@ -187,10 +187,12 @@ describe('server createServer', () => {
 
     expect(res.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({ 'Content-Type': 'text/event-stream' }));
     expect(res.write).toHaveBeenCalledWith(`data: ${JSON.stringify(cached)}\n\n`);
-    expect(res.write).toHaveBeenCalledWith(`data: ${JSON.stringify(live)}\n\n`);
+
+    // 새 구현에서는 캐시가 있으면 fetcher를 시작하지 않음
+    // 캐시가 비어있을 때만 fetcher가 시작됨
+    expect(lastFetcher).toBeUndefined();
 
     req.emit('close');
-    expect(lastFetcher?.stop).toHaveBeenCalled();
   });
 
   it('logs an error when initialization fails', async () => {

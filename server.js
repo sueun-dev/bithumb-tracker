@@ -76,7 +76,47 @@ function createServer(options = {}) {
   } = options;
 
   const app = express();
-  app.use(cors());
+
+  // CORS 설정 - 프로덕션과 개발 환경 모두 지원
+  const corsOptions = {
+    origin: function (origin, callback) {
+      // 허용할 origin 목록
+      const allowedOrigins = [
+        // 개발 환경
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001',
+        // GCP 프로덕션 (현재 인스턴스)
+        'http://34.44.60.202',
+        'http://34.44.60.202:3000',
+        'http://34.44.60.202:3001',
+        'https://34.44.60.202',
+        // 추가 도메인 (나중에 도메인 연결시)
+        process.env.ALLOWED_DOMAIN
+      ].filter(Boolean);
+
+      // SSE나 같은 도메인 요청은 origin이 없을 수 있음
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        console.log(`⚠️ CORS blocked: ${origin}`);
+        // 프로덕션에서는 에러 대신 false 반환 (더 안전)
+        callback(null, false);
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Length', 'X-Request-Id'],
+    maxAge: 86400 // 24시간 preflight 캐시
+  };
+
+  app.use(cors(corsOptions));
   app.use(express.json());
 
   let coinsCache = {};
@@ -84,6 +124,12 @@ function createServer(options = {}) {
   let previousCache = {}; // Store previous values to calculate changes
   let lastHistorySave = now();
   let saveInterval = null;
+
+  // SSE 연결 관리
+  const sseConnections = new Map(); // 활성 연결 추적
+  const MAX_SSE_CONNECTIONS = 100; // 최대 동시 연결 수
+  const SSE_TIMEOUT = 5 * 60 * 1000; // 5분 타임아웃
+  let connectionIdCounter = 0;
 
   async function initializeData() {
     try {
@@ -163,66 +209,162 @@ function createServer(options = {}) {
   }
 
   app.get('/api/stream', (req, res) => {
+    // 연결 수 제한 체크
+    if (sseConnections.size >= MAX_SSE_CONNECTIONS) {
+      logger.log(`⚠️ SSE connection limit reached (${MAX_SSE_CONNECTIONS})`);
+      res.status(503).json({ error: 'Too many connections' });
+      return;
+    }
+
+    // 고유 연결 ID 생성
+    const connectionId = ++connectionIdCounter;
+    const clientIp = req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      Connection: 'keep-alive'
+      Connection: 'keep-alive',
+      'X-Connection-Id': connectionId
     });
 
+    // 연결 정보 저장
+    const connectionInfo = {
+      id: connectionId,
+      response: res,
+      ip: clientIp,
+      startTime: Date.now(),
+      timeout: null,
+      fetcher: null,
+      handlers: {}
+    };
+
+    // 타임아웃 설정 (5분 후 자동 종료)
+    connectionInfo.timeout = setTimeout(() => {
+      logger.log(`⏱️ SSE connection ${connectionId} timed out after 5 minutes`);
+      cleanupConnection(connectionId);
+    }, SSE_TIMEOUT);
+
+    // 연결 추가
+    sseConnections.set(connectionId, connectionInfo);
+    logger.log(`✅ SSE connection ${connectionId} established (${sseConnections.size} active)`);
+
+    // 캐시된 데이터 즉시 전송
     if (Object.keys(coinsCache).length > 0) {
       Object.values(coinsCache).forEach(coin => {
         res.write(`data: ${JSON.stringify(coin)}\n\n`);
       });
-      logger.log(`📤 Sent ${Object.keys(coinsCache).length} cached coins to client`);
+      logger.log(`📤 Sent ${Object.keys(coinsCache).length} cached coins to connection ${connectionId}`);
     }
 
-    const fetcher = fetcherFactory();
+    // 새 fetcher는 캐시가 비어있을 때만 생성
+    if (Object.keys(coinsCache).length === 0) {
+      const fetcher = fetcherFactory();
+      connectionInfo.fetcher = fetcher;
 
-    const handleData = (coinData) => {
-      coinsCache[coinData.symbol] = coinData;
+      const handleData = (coinData) => {
+        coinsCache[coinData.symbol] = coinData;
 
-      const nowTs = now();
-      if (nowTs - lastHistorySave >= THIRTY_MINUTES) {
-        Object.keys(coinsCache).forEach(symbol => {
-          if (!coinsHistory[symbol]) {
-            coinsHistory[symbol] = [];
-          }
-          coinsHistory[symbol].push({
-            ...coinsCache[symbol],
-            timestamp: new Date().toISOString()
+        const nowTs = now();
+        if (nowTs - lastHistorySave >= THIRTY_MINUTES) {
+          Object.keys(coinsCache).forEach(symbol => {
+            if (!coinsHistory[symbol]) {
+              coinsHistory[symbol] = [];
+            }
+            coinsHistory[symbol].push({
+              ...coinsCache[symbol],
+              timestamp: new Date().toISOString()
+            });
+            if (coinsHistory[symbol].length > 48) {
+              coinsHistory[symbol].shift();
+            }
           });
-          if (coinsHistory[symbol].length > 48) {
-            coinsHistory[symbol].shift();
+          lastHistorySave = nowTs;
+        }
+
+        // 모든 활성 연결에 데이터 전송
+        sseConnections.forEach((conn) => {
+          try {
+            conn.response.write(`data: ${JSON.stringify(coinData)}\n\n`);
+          } catch (err) {
+            logger.error(`Failed to send data to connection ${conn.id}:`, err.message);
+            cleanupConnection(conn.id);
           }
         });
-        lastHistorySave = nowTs;
-      }
+      };
 
-      res.write(`data: ${JSON.stringify(coinData)}\n\n`);
-    };
+      const handleError = (error) => {
+        logger.error('Fetcher error:', error);
+      };
 
-    const handleError = (error) => {
-      logger.error('Fetcher error:', error);
-    };
+      const handleComplete = () => {
+        logger.log('Fetch complete');
+      };
 
-    const handleComplete = () => {
-      logger.log('Fetch complete');
-      res.end();
-    };
+      connectionInfo.handlers = { handleData, handleError, handleComplete };
+      fetcher.on('data', handleData);
+      fetcher.on('error', handleError);
+      fetcher.on('complete', handleComplete);
+      fetcher.start();
+    }
 
-    fetcher.on('data', handleData);
-    fetcher.on('error', handleError);
-    fetcher.on('complete', handleComplete);
-
+    // 클라이언트 연결 종료 처리
     req.on('close', () => {
-      fetcher.removeListener('data', handleData);
-      fetcher.removeListener('error', handleError);
-      fetcher.removeListener('complete', handleComplete);
-      fetcher.stop();
+      cleanupConnection(connectionId);
     });
 
-    fetcher.start();
+    // 에러 처리
+    req.on('error', (err) => {
+      logger.error(`SSE connection ${connectionId} error:`, err.message);
+      cleanupConnection(connectionId);
+    });
+
+    // Keep-alive ping (30초마다)
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(':ping\n\n');
+      } catch (err) {
+        clearInterval(keepAlive);
+        cleanupConnection(connectionId);
+      }
+    }, 30000);
+
+    connectionInfo.keepAlive = keepAlive;
   });
+
+  // 연결 정리 함수
+  function cleanupConnection(connectionId) {
+    const connection = sseConnections.get(connectionId);
+    if (!connection) return;
+
+    // 타임아웃 클리어
+    if (connection.timeout) {
+      clearTimeout(connection.timeout);
+    }
+
+    // Keep-alive 클리어
+    if (connection.keepAlive) {
+      clearInterval(connection.keepAlive);
+    }
+
+    // Fetcher 정리
+    if (connection.fetcher && connection.handlers) {
+      connection.fetcher.removeListener('data', connection.handlers.handleData);
+      connection.fetcher.removeListener('error', connection.handlers.handleError);
+      connection.fetcher.removeListener('complete', connection.handlers.handleComplete);
+      connection.fetcher.stop();
+    }
+
+    // Response 종료
+    try {
+      connection.response.end();
+    } catch (err) {
+      // Already closed
+    }
+
+    // 연결 제거
+    sseConnections.delete(connectionId);
+    logger.log(`🔌 SSE connection ${connectionId} closed (${sseConnections.size} active)`);
+  }
 
   app.get('/api/coins', (req, res) => {
     res.json({
@@ -329,10 +471,21 @@ function createServer(options = {}) {
   });
 
   function shutdown() {
+    logger.log('🛑 Shutting down server...');
+
+    // 모든 SSE 연결 정리
+    sseConnections.forEach((_, id) => {
+      logger.log(`Closing SSE connection ${id}`);
+      cleanupConnection(id);
+    });
+
+    // 정기 업데이트 인터벌 정리
     if (saveInterval) {
       clearIntervalFn(saveInterval);
       saveInterval = null;
     }
+
+    logger.log('✅ Server shutdown complete');
   }
 
   return {

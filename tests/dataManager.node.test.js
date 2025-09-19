@@ -48,7 +48,7 @@ describe('DataManager', () => {
     expect(lastUpdate).toHaveProperty('lastUpdate');
     expect(lastUpdate).toHaveProperty('recordCount', 1);
 
-    const info = manager.getLastUpdateInfo();
+    const info = await manager.getLastUpdateInfo();
     expect(info.recordCount).toBe(1);
   });
 
@@ -127,8 +127,8 @@ describe('DataManager', () => {
     expect(latest.BTC.holders).toBe('20');
   });
 
-  it('returns null when last update info does not exist', () => {
-    expect(manager.getLastUpdateInfo()).toBeNull();
+  it('returns null when last update info does not exist', async () => {
+    expect(await manager.getLastUpdateInfo()).toBeNull();
   });
 
   it('loads empty object when CSV file is missing', async () => {
