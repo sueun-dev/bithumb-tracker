@@ -1,14 +1,42 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const path = require('path');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const slowDown = require('express-slow-down');
+const compression = require('compression');
+const { body, param, query, validationResult } = require('express-validator');
+const mongoSanitize = require('express-mongo-sanitize');
 const { BithumbFetcher } = require('./fetchBithumb');
 const DataManager = require('./dataManager');
 
-const PORT = 3001;
-const HOST = '127.0.0.1';
+// Load environment variables
+require('dotenv').config();
+
+// Configuration with environment variables
+const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || '127.0.0.1';
 const THIRTY_MINUTES = 30 * 60 * 1000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Validate required environment variables in production
+if (NODE_ENV === 'production') {
+  const requiredEnvVars = ['BITHUMB_API_KEY', 'BITHUMB_API_SECRET'];
+  const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+  if (missingEnvVars.length > 0) {
+    console.error('❌ Missing required environment variables:', missingEnvVars.join(', '));
+    console.error('Please set them in your production environment');
+    process.exit(1);
+  }
+}
 
 function defaultPriceFetcher(symbol) {
+  // Additional validation layer for safety
+  if (!/^[A-Z0-9]{2,10}$/.test(symbol)) {
+    return Promise.reject(new Error('Invalid symbol format'));
+  }
   return new Promise((resolve, reject) => {
     const options = {
       hostname: 'api.bithumb.com',
@@ -77,6 +105,294 @@ function createServer(options = {}) {
 
   const app = express();
 
+  // Request tracking for DDoS protection
+  const requestCounts = new Map(); // Track requests per IP
+  const blacklistedIPs = new Set(); // Temporarily block abusive IPs
+  const BLACKLIST_DURATION = 60 * 60 * 1000; // 1 hour blacklist
+  const MAX_REQUESTS_PER_SECOND = 10; // Per IP per second limit
+
+  // Compression middleware - reduces bandwidth usage (DDoS mitigation)
+  app.use(compression({
+    level: 6, // Balance between speed and compression
+    threshold: 1024, // Only compress responses > 1kb
+    filter: (req, res) => {
+      // Don't compress SSE streams
+      if (res.getHeader('Content-Type') === 'text/event-stream') {
+        return false;
+      }
+      return compression.filter(req, res);
+    }
+  }));
+
+  // IP Blacklist Middleware - MUST be first after compression
+  app.use((req, res, next) => {
+    const ip = getClientIP(req);
+
+    if (blacklistedIPs.has(ip)) {
+      logger.log(`🚫 Blocked blacklisted IP: ${ip}`);
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // Track request rate per second
+    const now = Date.now();
+    const second = Math.floor(now / 1000);
+    const key = `${ip}:${second}`;
+
+    const count = requestCounts.get(key) || 0;
+    if (count >= MAX_REQUESTS_PER_SECOND) {
+      logger.log(`⚠️ Rate limit per second exceeded for IP: ${ip}`);
+      blacklistedIPs.add(ip);
+      setTimeout(() => blacklistedIPs.delete(ip), BLACKLIST_DURATION);
+      res.status(429).json({ error: 'Too many requests' });
+      return;
+    }
+
+    requestCounts.set(key, count + 1);
+
+    // Clean old entries every 10 seconds
+    if (Math.random() < 0.01) { // 1% chance to clean
+      const cutoff = second - 10;
+      for (const [k] of requestCounts) {
+        const [, ts] = k.split(':');
+        if (parseInt(ts) < cutoff) {
+          requestCounts.delete(k);
+        }
+      }
+    }
+
+    next();
+  });
+
+  // Helper to get real client IP
+  function getClientIP(req) {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (forwardedFor) {
+      // Take the first IP from the comma-separated list
+      return forwardedFor.split(',')[0].trim();
+    }
+    return req.socket?.remoteAddress || req.ip || 'unknown';
+  }
+
+  // Request timeout protection - prevent slowloris attacks
+  app.use((req, res, next) => {
+    // Set timeout for all requests (30 seconds)
+    req.setTimeout(30000, () => {
+      logger.log(`⏱️ Request timeout for ${getClientIP(req)}`);
+      res.status(408).json({ error: 'Request timeout' });
+    });
+
+    // Set response timeout
+    res.setTimeout(30000, () => {
+      logger.log(`⏱️ Response timeout for ${getClientIP(req)}`);
+      res.status(503).json({ error: 'Service unavailable' });
+    });
+
+    next();
+  });
+
+  // Security middleware - MUST be after IP tracking
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],  // React needs inline styles
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "http://localhost:*", "http://127.0.0.1:*", "http://34.44.60.202:*"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+        upgradeInsecureRequests: [],
+        blockAllMixedContent: []
+      },
+    },
+    crossOriginEmbedderPolicy: false,  // For SSE
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true
+    },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    permittedCrossDomainPolicies: false
+  }));
+
+  // Additional security headers
+  app.use((req, res, next) => {
+    // Cache control for security
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    // Additional security headers
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+
+    // Remove server header
+    res.removeHeader('X-Powered-By');
+    res.removeHeader('Server');
+
+    next();
+  });
+
+  // Request sanitization - removes $ and . from req.body, req.query, req.params
+  app.use(mongoSanitize({
+    replaceWith: '_',
+    onSanitize: ({ req, key }) => {
+      logger.log(`⚠️ Sanitized dangerous character in ${key}`);
+    }
+  }));
+
+  // Body parsing with strict size limits and type checking
+  app.use(express.json({
+    limit: '100kb',  // Strict limit for JSON (was 1mb)
+    strict: true,     // Only accept arrays and objects
+    type: 'application/json',
+    verify: (req, res, buf) => {
+      // Additional verification for suspicious payloads
+      const str = buf.toString('utf8');
+      // Check for potential JSON bomb patterns
+      if (str.includes('999999999') || str.match(/{\s*{\s*{\s*{/)) {
+        throw new Error('Suspicious payload detected');
+      }
+    }
+  }));
+  app.use(express.urlencoded({
+    extended: false,  // Use simpler parsing (more secure)
+    limit: '100kb',    // Strict limit
+    parameterLimit: 50 // Limit number of parameters
+  }));
+
+  // Memory store for rate limiting (shared across all limiters)
+  const rateLimitStore = new Map();
+
+  // General rate limiter with progressive penalties
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false,
+    keyGenerator: (req) => getClientIP(req), // Use real IP
+    handler: (req, res) => {
+      const ip = getClientIP(req);
+      logger.log(`🚫 Rate limit exceeded for IP: ${ip}`);
+      // Add to blacklist for repeat offenders
+      const violations = (rateLimitStore.get(`violations:${ip}`) || 0) + 1;
+      rateLimitStore.set(`violations:${ip}`, violations);
+
+      if (violations > 3) {
+        blacklistedIPs.add(ip);
+        setTimeout(() => blacklistedIPs.delete(ip), BLACKLIST_DURATION);
+        logger.log(`⛔ IP blacklisted due to repeated violations: ${ip}`);
+      }
+
+      res.status(429).json({ error: 'Too many requests, please try again later.' });
+    }
+  });
+
+  // Progressive slowdown - gradually delays responses for frequent requesters
+  const speedLimiter = slowDown({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    delayAfter: 50, // Start delaying after 50 requests
+    delayMs: (hits) => hits * 100, // Add 100ms delay per request over limit
+    maxDelayMs: 5000, // Maximum delay of 5 seconds
+    keyGenerator: (req) => getClientIP(req),
+  });
+
+  // Strict rate limiter for API endpoints with burst protection
+  const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 20, // 20 requests per minute for API endpoints
+    message: 'API rate limit exceeded.',
+    skipSuccessfulRequests: false,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => getClientIP(req),
+    skip: (req) => {
+      // Skip rate limiting for health checks from monitoring
+      const ip = getClientIP(req);
+      // Add your monitoring IPs here if needed
+      const monitoringIPs = ['127.0.0.1', '::1'];
+      return monitoringIPs.includes(ip);
+    }
+  });
+
+  // Burst limiter - prevent rapid bursts
+  const burstLimiter = rateLimit({
+    windowMs: 1000, // 1 second
+    max: 5, // Max 5 requests per second
+    skipFailedRequests: true,
+    keyGenerator: (req) => getClientIP(req),
+  });
+
+  // Very strict limiter for SSE connections with connection tracking
+  const sseConnectionsPerIP = new Map();
+  const MAX_SSE_PER_IP = 2; // Max 2 concurrent SSE connections per IP
+
+  const sseLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 3, // Only 3 SSE connection attempts per IP per 5 minutes
+    message: 'Too many stream connections.',
+    skipSuccessfulRequests: false,
+    keyGenerator: (req) => getClientIP(req),
+    handler: (req, res) => {
+      const ip = getClientIP(req);
+      logger.log(`🚫 SSE rate limit exceeded for IP: ${ip}`);
+      res.status(429).json({ error: 'Too many stream connections, please try again later.' });
+    }
+  });
+
+  // Custom SSE connection limiter per IP
+  const sseConnectionLimiter = (req, res, next) => {
+    const ip = getClientIP(req);
+    const currentConnections = sseConnectionsPerIP.get(ip) || 0;
+
+    if (currentConnections >= MAX_SSE_PER_IP) {
+      logger.log(`⚠️ Too many concurrent SSE connections from IP: ${ip}`);
+      return res.status(429).json({ error: 'Too many concurrent connections' });
+    }
+
+    next();
+  };
+
+  // Apply rate limiting layers in order of strictness
+  app.use(generalLimiter);   // General rate limit
+  app.use(speedLimiter);     // Progressive slowdown
+  app.use(burstLimiter);     // Burst protection
+
+  // Input validation helper
+  const handleValidationErrors = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.log(`❌ Validation failed: ${JSON.stringify(errors.array())}`);
+      return res.status(400).json({
+        error: 'Invalid input parameters',
+        details: process.env.NODE_ENV === 'development' ? errors.array() : undefined
+      });
+    }
+    next();
+  };
+
+  // Custom validator for coin symbols - validates against actual cached coins
+  const isValidCoinSymbol = (value) => {
+    // Check format: 2-10 uppercase letters/numbers only
+    if (!/^[A-Z0-9]{2,10}$/.test(value)) {
+      throw new Error('Invalid symbol format');
+    }
+    // Reject dangerous patterns
+    const dangerous = ['..', '/', '\\', '<', '>', '"', "'", '%', '&', '$', '#', '@', '!', '?', ':', ';', '__proto__', 'constructor', 'prototype'];
+    if (dangerous.some(pattern => value.includes(pattern))) {
+      throw new Error('Dangerous characters detected');
+    }
+    return true;
+  };
+
   // CORS 설정 - 프로덕션과 개발 환경 모두 지원
   const corsOptions = {
     origin: function (origin, callback) {
@@ -117,7 +433,12 @@ function createServer(options = {}) {
   };
 
   app.use(cors(corsOptions));
-  app.use(express.json());
+
+  // Serve static files in production
+  if (NODE_ENV === 'production') {
+    // Serve static files from React build
+    app.use(express.static(path.join(__dirname, 'build')));
+  }
 
   let coinsCache = {};
   let coinsHistory = {};
@@ -200,15 +521,31 @@ function createServer(options = {}) {
             logger.log('✅ Periodic data update saved with change tracking');
           }
         } catch (error) {
-          logger.error('❌ Error during periodic update:', error);
+          logger.error('❌ Error during periodic update');
+      // Never log full error details in production
+      if (process.env.NODE_ENV === 'development') {
+        console.error(error);
+      }
         }
       }, THIRTY_MINUTES);
     } catch (error) {
-      logger.error('❌ Error initializing data:', error);
+      logger.error('❌ Error initializing data');
+      // Never log full error details in production
+      if (process.env.NODE_ENV === 'development') {
+        console.error(error);
+      }
     }
   }
 
-  app.get('/api/stream', (req, res) => {
+  app.get('/api/stream',
+    sseLimiter,              // Rate limiting for SSE
+    sseConnectionLimiter,    // Per-IP connection limiting
+    [
+      // Validate headers to prevent injection
+      query('client_id').optional().isAlphanumeric().isLength({ max: 50 }),
+    ],
+    handleValidationErrors,
+    (req, res) => {
     // 연결 수 제한 체크
     if (sseConnections.size >= MAX_SSE_CONNECTIONS) {
       logger.log(`⚠️ SSE connection limit reached (${MAX_SSE_CONNECTIONS})`);
@@ -218,7 +555,12 @@ function createServer(options = {}) {
 
     // 고유 연결 ID 생성
     const connectionId = ++connectionIdCounter;
-    const clientIp = req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+    // Get validated client IP
+    const clientIp = getClientIP(req);
+
+    // Track SSE connection for this IP
+    const currentCount = sseConnectionsPerIP.get(clientIp) || 0;
+    sseConnectionsPerIP.set(clientIp, currentCount + 1);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -286,14 +628,19 @@ function createServer(options = {}) {
           try {
             conn.response.write(`data: ${JSON.stringify(coinData)}\n\n`);
           } catch (err) {
-            logger.error(`Failed to send data to connection ${conn.id}:`, err.message);
+            logger.error(`Failed to send data to connection ${conn.id}`);
+            // Never expose error details
             cleanupConnection(conn.id);
           }
         });
       };
 
       const handleError = (error) => {
-        logger.error('Fetcher error:', error);
+        logger.error('Fetcher error');
+        // Never expose error details
+        if (process.env.NODE_ENV === 'development') {
+          console.error(error);
+        }
       };
 
       const handleComplete = () => {
@@ -310,12 +657,26 @@ function createServer(options = {}) {
     // 클라이언트 연결 종료 처리
     req.on('close', () => {
       cleanupConnection(connectionId);
+      // Decrement SSE connection count for this IP
+      const count = sseConnectionsPerIP.get(clientIp) || 0;
+      if (count > 0) {
+        sseConnectionsPerIP.set(clientIp, count - 1);
+      }
     });
 
     // 에러 처리
     req.on('error', (err) => {
-      logger.error(`SSE connection ${connectionId} error:`, err.message);
+      logger.error(`SSE connection ${connectionId} error`);
+      // Never log error details that could expose system info
+      if (process.env.NODE_ENV === 'development') {
+        console.error(err);
+      }
       cleanupConnection(connectionId);
+      // Decrement SSE connection count for this IP
+      const count = sseConnectionsPerIP.get(clientIp) || 0;
+      if (count > 0) {
+        sseConnectionsPerIP.set(clientIp, count - 1);
+      }
     });
 
     // Keep-alive ping (30초마다)
@@ -366,19 +727,62 @@ function createServer(options = {}) {
     logger.log(`🔌 SSE connection ${connectionId} closed (${sseConnections.size} active)`);
   }
 
-  app.get('/api/coins', (req, res) => {
+  app.get('/api/coins',
+    apiLimiter,  // API rate limiting
+    [
+      // Validate query parameters
+      query('sort').optional().isIn(['symbol', 'name', 'price', 'volume', 'holders']).withMessage('Invalid sort parameter'),
+      query('limit').optional().isInt({ min: 1, max: 1000 }).toInt().withMessage('Limit must be between 1-1000'),
+      query('offset').optional().isInt({ min: 0, max: 10000 }).toInt().withMessage('Invalid offset'),
+    ],
+    handleValidationErrors,
+    (req, res) => {
+    // Sanitize output data to prevent XSS
+    const sanitizedCache = {};
+    Object.keys(coinsCache).forEach(key => {
+      // Only include safe keys
+      if (/^[A-Z0-9]{2,10}$/.test(key)) {
+        sanitizedCache[key] = {
+          ...coinsCache[key],
+          // Ensure all string values are safe
+          symbol: String(coinsCache[key].symbol || '').substring(0, 10),
+          code: String(coinsCache[key].code || '').substring(0, 10),
+          name_kr: String(coinsCache[key].name_kr || '').substring(0, 100),
+          name_en: String(coinsCache[key].name_en || '').substring(0, 100),
+        };
+      }
+    });
+
     res.json({
-      coins: coinsCache,
-      count: Object.keys(coinsCache).length,
+      coins: sanitizedCache,
+      count: Object.keys(sanitizedCache).length,
       lastUpdate: new Date().toISOString()
     });
   });
 
-  app.get('/api/coin/:symbol', async (req, res) => {
-    const { symbol } = req.params;
+  app.get('/api/coin/:symbol',
+    apiLimiter,  // API rate limiting
+    [
+      // CRITICAL: Validate symbol parameter to prevent injection attacks
+      param('symbol')
+        .trim()
+        .toUpperCase()
+        .custom(isValidCoinSymbol)
+        .withMessage('Invalid coin symbol'),
+    ],
+    handleValidationErrors,
+    async (req, res) => {
+    // Symbol is now validated and safe to use
+    const symbol = req.params.symbol.toUpperCase();
 
     try {
-      // 현재 실시간 가격 가져오기
+      // Validate symbol exists in cache first
+      if (!coinsCache[symbol]) {
+        logger.log(`⚠️ Symbol not found in cache: ${symbol}`);
+        return res.status(404).json({ error: 'Coin not found' });
+      }
+
+      // 현재 실시간 가격 가져오기 (symbol is now validated)
       const currentData = await priceFetcher(symbol);
 
       // 캐시된 코인 데이터 (보유자수, 유통량 등)
@@ -388,7 +792,8 @@ function createServer(options = {}) {
       const candlestickResponse = await new Promise((resolve, reject) => {
         const options = {
           hostname: 'api.bithumb.com',
-          path: `/public/candlestick/${symbol}_KRW/10m`,  // 10분봉 데이터
+          // Symbol is validated, but still use template literal safely
+          path: `/public/candlestick/${encodeURIComponent(symbol)}_KRW/10m`,  // 10분봉 데이터
           method: 'GET',
           headers: {
             'Content-Type': 'application/json'
@@ -461,14 +866,109 @@ function createServer(options = {}) {
         }
       });
     } catch (error) {
-      logger.error('Error fetching coin detail:', error);
-      res.status(500).json({ error: 'Failed to fetch coin detail' });
+      logger.error('Error fetching coin detail');
+      // Never expose internal errors to client
+      if (process.env.NODE_ENV === 'development') {
+        console.error(error);
+      }
+      // Generic error message - never expose details
+      res.status(500).json({ error: 'Service temporarily unavailable' });
     }
   });
 
-  app.get('/', (req, res) => {
+  app.get('/',
+    rateLimit({
+      windowMs: 1 * 60 * 1000,
+      max: 30,  // Health checks can be more frequent
+    }),
+    (req, res) => {
     res.send('Server running');
   });
+
+  // Circuit breaker for upstream API protection
+  let circuitBreakerState = 'closed'; // closed, open, half-open
+  let failureCount = 0;
+  const FAILURE_THRESHOLD = 5;
+  const CIRCUIT_RESET_TIMEOUT = 60000; // 1 minute
+
+  function checkCircuitBreaker() {
+    if (circuitBreakerState === 'open') {
+      return false;
+    }
+    return true;
+  }
+
+  function recordSuccess() {
+    failureCount = 0;
+    if (circuitBreakerState === 'half-open') {
+      circuitBreakerState = 'closed';
+      logger.log('🔌 Circuit breaker closed');
+    }
+  }
+
+  function recordFailure() {
+    failureCount++;
+    if (failureCount >= FAILURE_THRESHOLD) {
+      circuitBreakerState = 'open';
+      logger.log('⚡ Circuit breaker opened due to failures');
+      setTimeout(() => {
+        circuitBreakerState = 'half-open';
+        logger.log('🔄 Circuit breaker half-open, testing...');
+      }, CIRCUIT_RESET_TIMEOUT);
+    }
+  }
+
+  // Global error handler with circuit breaker integration
+  app.use((err, req, res, next) => {
+    // Log generic message only
+    logger.error('Unhandled error occurred');
+
+    // Only log details in development
+    if (process.env.NODE_ENV === 'development') {
+      console.error(err);
+    }
+
+    // Record failure for circuit breaker (check without exposing)
+    if (err && err.message) {
+      const msg = String(err.message);
+      if (msg.includes('ETIMEDOUT') || msg.includes('ECONNREFUSED')) {
+        recordFailure();
+      }
+    }
+
+    // NEVER leak any error details to client
+    const statusCode = err.statusCode || 500;
+    res.status(statusCode).json({
+      error: statusCode === 404 ? 'Resource not found' : 'Service unavailable',
+      // Never include error messages or stack traces
+      code: statusCode
+    });
+  });
+
+  // DDoS protection status endpoint (for monitoring)
+  app.get('/api/ddos-status',
+    rateLimit({
+      windowMs: 1 * 60 * 1000,
+      max: 10,
+      keyGenerator: (req) => getClientIP(req),
+    }),
+    (req, res) => {
+      const ip = getClientIP(req);
+      // Only allow from localhost for security
+      if (ip !== '127.0.0.1' && ip !== '::1') {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      res.json({
+        blacklistedIPs: blacklistedIPs.size,
+        activeRequests: requestCounts.size,
+        sseConnections: sseConnections.size,
+        sseConnectionsPerIP: Array.from(sseConnectionsPerIP.entries()),
+        circuitBreaker: circuitBreakerState,
+        timestamp: new Date().toISOString()
+      });
+    }
+  );
 
   function shutdown() {
     logger.log('🛑 Shutting down server...');

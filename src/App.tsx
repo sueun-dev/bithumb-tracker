@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import './App.css';
 import { CoinData } from './types';
 import CoinDetail from './CoinDetail';
@@ -37,15 +37,15 @@ const useTheme = () => {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  const toggleTheme = () => {
+  const toggleTheme = useCallback(() => {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  };
+  }, []);
 
   return { theme, toggleTheme };
 };
 
-// Theme Toggle Component
-const ThemeToggle: React.FC<{ theme: 'light' | 'dark'; onToggle: () => void }> = ({ theme, onToggle }) => {
+// Memoized Theme Toggle Component
+const ThemeToggle = memo<{ theme: 'light' | 'dark'; onToggle: () => void }>(({ theme, onToggle }) => {
   return (
     <div className="theme-toggle">
       <span className="theme-label">☀️</span>
@@ -61,16 +61,157 @@ const ThemeToggle: React.FC<{ theme: 'light' | 'dark'; onToggle: () => void }> =
       <span className="theme-label">🌙</span>
     </div>
   );
+});
+ThemeToggle.displayName = 'ThemeToggle';
+
+// Memoized format functions
+const formatNumber = (num: string | null): string => {
+  if (!num) return '-';
+  const number = parseInt(num, 10);
+  if (Number.isNaN(number)) return num;
+  return number.toLocaleString('ko-KR');
 };
 
-// Direct API calls removed - server handles all data fetching
+const FormatPercent = memo<{ percent: string | null }>(({ percent }) => {
+  if (!percent) return <span>-</span>;
+  const num = parseFloat(percent);
+  const color = num > 0 ? 'positive' : num < 0 ? 'negative' : '';
+  return (
+    <span className={color}>
+      {num > 0 ? '+' : ''}{num}%
+    </span>
+  );
+});
+FormatPercent.displayName = 'FormatPercent';
+
+// Memoized Coin Row Component
+const CoinRow = memo<{
+  coin: CoinData;
+  onSelectCoin: (coin: CoinData) => void;
+}>(({ coin, onSelectCoin }) => {
+  const handleClick = useCallback(() => {
+    onSelectCoin(coin);
+  }, [coin, onSelectCoin]);
+
+  return (
+    <tr onClick={handleClick}>
+      <td>
+        <div className="symbol-cell">
+          <div className="coin-avatar">{coin.symbol.charAt(0)}</div>
+          <span className="symbol">{coin.symbol}</span>
+        </div>
+      </td>
+      <td>
+        <div className="coin-name">
+          <div className="name-kr">{coin.name_kr}</div>
+          <div className="name-en">{coin.name_en}</div>
+        </div>
+      </td>
+      <td className="number">
+        <div className="metric-with-change">
+          <span>{formatNumber(coin.holders)}명</span>
+          {coin.holders_change && (
+            <span className={`change-indicator ${Number(coin.holders_change.percent) > 0 ? 'positive' : 'negative'}`}>
+              30분전 대비 {Number(coin.holders_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holders_change.absolute).toLocaleString('ko-KR')}명 ({coin.holders_change.percent}%)
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="number">
+        <div className="metric-with-change">
+          <span>{formatNumber(coin.circulation)}</span>
+          {coin.circulation_30min_change && (
+            <span className={`change-indicator ${Number(coin.circulation_30min_change.percent) > 0 ? 'positive' : 'negative'}`}>
+              30분전 대비 {Number(coin.circulation_30min_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.circulation_30min_change.absolute).toLocaleString('ko-KR')} ({coin.circulation_30min_change.percent}%)
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="percent">
+        <FormatPercent percent={coin.circulation_change} />
+      </td>
+      <td className="percent">
+        <div className="metric-with-change">
+          <span>{coin.holder_influence ? `${coin.holder_influence}%` : '-'}</span>
+          {coin.holder_influence_change && (
+            <span className={`change-indicator ${Number(coin.holder_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
+              30분전 대비 {Number(coin.holder_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holder_influence_change.absolute).toFixed(2)}%p ({coin.holder_influence_change.percent}%)
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="percent">
+        <div className="metric-with-change">
+          <span>{coin.trader_influence ? `${coin.trader_influence}%` : '-'}</span>
+          {coin.trader_influence_change && (
+            <span className={`change-indicator ${Number(coin.trader_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
+              30분전 대비 {Number(coin.trader_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.trader_influence_change.absolute).toFixed(2)}%p ({coin.trader_influence_change.percent}%)
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+CoinRow.displayName = 'CoinRow';
+
+// Memoized Table Header Component
+const TableHeader = memo<{
+  sortKey: keyof CoinData;
+  sortOrder: 'asc' | 'desc';
+  onSort: (key: keyof CoinData) => void;
+}>(({ sortKey, sortOrder, onSort }) => {
+  const columns: Array<{ key: keyof CoinData; label: string }> = [
+    { key: 'symbol', label: '심볼' },
+    { key: 'name_kr', label: '코인명' },
+    { key: 'holders', label: '보유자 수' },
+    { key: 'circulation', label: '빗썸 내부 유통량' },
+    { key: 'circulation_change', label: '전일대비 유통량' },
+    { key: 'holder_influence', label: '최상위 회원 영향도 (보유)' },
+    { key: 'trader_influence', label: '최상위 회원 영향도 (거래)' },
+  ];
+
+  return (
+    <thead>
+      <tr>
+        {columns.map(({ key, label }) => (
+          <th
+            key={key}
+            onClick={() => onSort(key)}
+            className="sortable"
+          >
+            {label} {sortKey === key && (sortOrder === 'asc' ? '▲' : '▼')}
+          </th>
+        ))}
+      </tr>
+    </thead>
+  );
+});
+TableHeader.displayName = 'TableHeader';
+
+// Debounce hook for search input
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 
 function App() {
   // Theme Management
   const { theme, toggleTheme } = useTheme();
 
-  // Application State
-  const [coins, setCoins] = useState<{ [key: string]: CoinData }>({});
+  // Application State with optimized updates
+  const [coinsMap, setCoinsMap] = useState<Map<string, CoinData>>(new Map());
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [searchTerm, setSearchTerm] = useState('');
@@ -80,26 +221,14 @@ function App() {
   const itemsPerPage = 30;
   const [selectedCoin, setSelectedCoin] = useState<CoinData | null>(null);
 
-  const formatNumber = (num: string | null) => {
-    if (!num) return '-';
-    const number = parseInt(num, 10);
-    if (Number.isNaN(number)) return num;
-    return number.toLocaleString('ko-KR');
-  };
+  // Debounce search term to reduce re-renders
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
-  const formatPercent = (percent: string | null) => {
-    if (!percent) return '-';
-    const num = parseFloat(percent);
-    const color = num > 0 ? 'positive' : num < 0 ? 'negative' : '';
-    return (
-      <span className={color}>
-        {num > 0 ? '+' : ''}{num}%
-      </span>
-    );
-  };
+  // Convert Map to array only when needed
+  const coins = useMemo(() => Array.from(coinsMap.values()), [coinsMap]);
 
+  // Memoized SSE connection
   const fetchData = useCallback(() => {
-    // Use relative URL for production compatibility
     const apiUrl = window.location.hostname === 'localhost'
       ? 'http://localhost:3001/api/stream'
       : '/api/stream';
@@ -108,19 +237,22 @@ function App() {
     eventSource.onmessage = (event) => {
       try {
         const coinData = JSON.parse(event.data);
-        setCoins(prev => ({
-          ...prev,
-          [coinData.symbol]: coinData
-        }));
+        // Update only the specific coin, not the entire object
+        setCoinsMap(prev => {
+          const newMap = new Map(prev);
+          newMap.set(coinData.symbol, coinData);
+          return newMap;
+        });
         setLastUpdate(new Date());
         setLoading(false);
       } catch (error) {
-        // Silently handle parse error
+        // Silently handle parse error - never expose to console
+        // No console.error() to prevent information leakage
       }
     };
 
     eventSource.onerror = () => {
-      // Server connection error - data will be loaded from server cache
+      // Never log connection errors to console (security)
       eventSource.close();
       setLoading(false);
     };
@@ -132,27 +264,30 @@ function App() {
 
   useEffect(() => {
     const cleanup = fetchData();
-    return () => {
-      cleanup?.();
-    };
+    return cleanup;
   }, [fetchData]);
 
-  const handleSort = (key: keyof CoinData) => {
-    if (sortKey === key) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
-      setSortOrder('asc');
-    }
-  };
+  // Memoized sort handler
+  const handleSort = useCallback((key: keyof CoinData) => {
+    setSortKey(prevKey => {
+      if (prevKey === key) {
+        setSortOrder(prevOrder => prevOrder === 'asc' ? 'desc' : 'asc');
+      } else {
+        setSortOrder('asc');
+      }
+      return key;
+    });
+  }, []);
 
-  const filteredAndSortedCoins = Object.values(coins)
-    .filter(coin =>
-      coin.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      coin.name_kr.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      coin.name_en.toLowerCase().includes(searchTerm.toLowerCase())
-    )
-    .sort((a, b) => {
+  // Memoized filtered and sorted coins
+  const filteredAndSortedCoins = useMemo(() => {
+    const filtered = coins.filter(coin =>
+      coin.symbol.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
+      coin.name_kr.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
+      coin.name_en.toLowerCase().includes(debouncedSearchTerm.toLowerCase())
+    );
+
+    return filtered.sort((a, b) => {
       const aVal = a[sortKey];
       const bVal = b[sortKey];
       const numericFields: Array<keyof CoinData> = ['circulation', 'circulation_change', 'holders', 'holder_influence', 'trader_influence'];
@@ -160,16 +295,15 @@ function App() {
       if (numericFields.includes(sortKey)) {
         // null이나 빈 값 처리
         if (aVal === null || aVal === undefined || aVal === '') {
-          return sortOrder === 'asc' ? 1 : -1;  // null 값은 뒤로
+          return sortOrder === 'asc' ? 1 : -1;
         }
         if (bVal === null || bVal === undefined || bVal === '') {
-          return sortOrder === 'asc' ? -1 : 1;  // null 값은 뒤로
+          return sortOrder === 'asc' ? -1 : 1;
         }
 
         const aNum = parseFloat(String(aVal).replace(/,/g, '').replace(/%/g, ''));
         const bNum = parseFloat(String(bVal).replace(/,/g, '').replace(/%/g, ''));
 
-        // NaN 체크
         if (isNaN(aNum)) return sortOrder === 'asc' ? 1 : -1;
         if (isNaN(bNum)) return sortOrder === 'asc' ? -1 : 1;
 
@@ -182,15 +316,41 @@ function App() {
       const comparison = aStr.localeCompare(bStr, 'ko-KR');
       return sortOrder === 'asc' ? comparison : -comparison;
     });
+  }, [coins, debouncedSearchTerm, sortKey, sortOrder]);
 
-  const totalPages = Math.ceil(filteredAndSortedCoins.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const currentCoins = filteredAndSortedCoins.slice(startIndex, endIndex);
+  // Memoized pagination values
+  const { totalPages, currentCoins } = useMemo(() => {
+    const total = Math.ceil(filteredAndSortedCoins.length / itemsPerPage);
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return {
+      totalPages: total,
+      currentCoins: filteredAndSortedCoins.slice(startIndex, endIndex)
+    };
+  }, [filteredAndSortedCoins, currentPage, itemsPerPage]);
 
+  // Reset page when search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm]);
+  }, [debouncedSearchTerm]);
+
+  // Memoized pagination handlers
+  const handlePrevPage = useCallback(() => {
+    setCurrentPage(prev => Math.max(1, prev - 1));
+  }, []);
+
+  const handleNextPage = useCallback(() => {
+    setCurrentPage(prev => Math.min(totalPages || 1, prev + 1));
+  }, [totalPages]);
+
+  // Memoized coin selection handler
+  const handleSelectCoin = useCallback((coin: CoinData) => {
+    setSelectedCoin(coin);
+  }, []);
+
+  const handleCloseCoinDetail = useCallback(() => {
+    setSelectedCoin(null);
+  }, []);
 
   if (loading) {
     return (
@@ -215,9 +375,9 @@ function App() {
             <div className="header-info">
               <div className="update-info">
                 30분마다 자동 업데이트
-                {Object.values(coins).some(c => c.last_update) ? (
+                {coins.some(c => c.last_update) ? (
                   <span className="last-update-time">
-                    (30분 업데이트: {new Date(Object.values(coins).find(c => c.last_update)?.last_update || '').toLocaleTimeString('ko-KR')})
+                    (30분 업데이트: {new Date(coins.find(c => c.last_update)?.last_update || '').toLocaleTimeString('ko-KR')})
                   </span>
                 ) : (
                   <span className="last-update-time">
@@ -227,7 +387,7 @@ function App() {
               </div>
               <div className="connection-status">
                 <span className="status-dot"></span>
-                실시간: {Object.keys(coins).length}개 코인
+                실시간: {coins.length}개 코인
               </div>
             </div>
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
@@ -261,104 +421,34 @@ function App() {
       <div className="table-container">
         <div className="table-wrapper">
           <table className="coin-table">
-          <thead>
-            <tr>
-              <th onClick={() => handleSort('symbol')} className="sortable">
-                심볼 {sortKey === 'symbol' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('name_kr')} className="sortable">
-                코인명 {sortKey === 'name_kr' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('holders')} className="sortable">
-                보유자 수 {sortKey === 'holders' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('circulation')} className="sortable">
-                빗썸 내부 유통량 {sortKey === 'circulation' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('circulation_change')} className="sortable">
-                전일대비 유통량 {sortKey === 'circulation_change' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('holder_influence')} className="sortable">
-                최상위 회원 영향도 (보유) {sortKey === 'holder_influence' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-              <th onClick={() => handleSort('trader_influence')} className="sortable">
-                최상위 회원 영향도 (거래) {sortKey === 'trader_influence' && (sortOrder === 'asc' ? '▲' : '▼')}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {currentCoins.map((coin) => (
-              <tr key={coin.symbol} onClick={() => setSelectedCoin(coin)}>
-                <td>
-                  <div className="symbol-cell">
-                    <div className="coin-avatar">{coin.symbol.charAt(0)}</div>
-                    <span className="symbol">{coin.symbol}</span>
-                  </div>
-                </td>
-                <td>
-                  <div className="coin-name">
-                    <div className="name-kr">{coin.name_kr}</div>
-                    <div className="name-en">{coin.name_en}</div>
-                  </div>
-                </td>
-                <td className="number">
-                  <div className="metric-with-change">
-                    <span>{formatNumber(coin.holders)}명</span>
-                    {coin.holders_change && (
-                      <span className={`change-indicator ${Number(coin.holders_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        30분전 대비 {Number(coin.holders_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holders_change.absolute).toLocaleString('ko-KR')}명 ({coin.holders_change.percent}%)
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="number">
-                  <div className="metric-with-change">
-                    <span>{formatNumber(coin.circulation)}</span>
-                    {coin.circulation_30min_change && (
-                      <span className={`change-indicator ${Number(coin.circulation_30min_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        30분전 대비 {Number(coin.circulation_30min_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.circulation_30min_change.absolute).toLocaleString('ko-KR')} ({coin.circulation_30min_change.percent}%)
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="percent">{formatPercent(coin.circulation_change)}</td>
-                <td className="percent">
-                  <div className="metric-with-change">
-                    <span>{coin.holder_influence ? `${coin.holder_influence}%` : '-'}</span>
-                    {coin.holder_influence_change && (
-                      <span className={`change-indicator ${Number(coin.holder_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        30분전 대비 {Number(coin.holder_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.holder_influence_change.absolute).toFixed(2)}%p ({coin.holder_influence_change.percent}%)
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="percent">
-                  <div className="metric-with-change">
-                    <span>{coin.trader_influence ? `${coin.trader_influence}%` : '-'}</span>
-                    {coin.trader_influence_change && (
-                      <span className={`change-indicator ${Number(coin.trader_influence_change.percent) > 0 ? 'positive' : 'negative'}`}>
-                        30분전 대비 {Number(coin.trader_influence_change.percent) > 0 ? '↑' : '↓'} {Math.abs(coin.trader_influence_change.absolute).toFixed(2)}%p ({coin.trader_influence_change.percent}%)
-                      </span>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            <TableHeader
+              sortKey={sortKey}
+              sortOrder={sortOrder}
+              onSort={handleSort}
+            />
+            <tbody>
+              {currentCoins.map((coin) => (
+                <CoinRow
+                  key={coin.symbol}
+                  coin={coin}
+                  onSelectCoin={handleSelectCoin}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
       <div className="pagination">
         <button
-          onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+          onClick={handlePrevPage}
           disabled={currentPage === 1}
         >
           이전
         </button>
         <span>페이지 {currentPage} / {totalPages || 1}</span>
         <button
-          onClick={() => setCurrentPage(prev => Math.min(totalPages || 1, prev + 1))}
+          onClick={handleNextPage}
           disabled={currentPage === totalPages || totalPages === 0}
         >
           다음
@@ -370,7 +460,7 @@ function App() {
           symbol={selectedCoin.symbol}
           name_kr={selectedCoin.name_kr}
           name_en={selectedCoin.name_en}
-          onClose={() => setSelectedCoin(null)}
+          onClose={handleCloseCoinDetail}
         />
       )}
     </div>
