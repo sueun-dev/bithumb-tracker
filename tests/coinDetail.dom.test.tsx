@@ -69,7 +69,7 @@ describe('CoinDetail', () => {
 
     render(<CoinDetail symbol="ETH" name_kr="이더리움" name_en="Ethereum" onClose={jest.fn()} />);
 
-    await waitFor(() => expect(screen.getByText(/실시간 데이터를 불러올 수 없습니다/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/서비스를 일시적으로 사용할 수 없습니다/)).toBeInTheDocument());
   });
 
   it('calls onClose when the overlay is clicked', async () => {

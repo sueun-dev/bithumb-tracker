@@ -21,7 +21,7 @@ interface DetailData {
 }
 
 
-const CoinDetail: React.FC<CoinDetailProps> = ({ symbol, name_kr, name_en, onClose }) => {
+const CoinDetail: React.FC<CoinDetailProps> = React.memo(({ symbol, name_kr, name_en, onClose }) => {
   const [data, setData] = useState<DetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,8 +46,9 @@ const CoinDetail: React.FC<CoinDetailProps> = ({ symbol, name_kr, name_en, onClo
       setData(result);
       setError(null);
     } catch (err) {
-      // Silently handle error in production
-      setError('실시간 데이터를 불러올 수 없습니다.');
+      // Never expose error details (security)
+      // Generic error message only
+      setError('서비스를 일시적으로 사용할 수 없습니다.');
       setData(null);
     } finally {
       setLoading(false);
@@ -230,6 +231,8 @@ const CoinDetail: React.FC<CoinDetailProps> = ({ symbol, name_kr, name_en, onClo
       </div>
     </div>
   );
-};
+});
+
+CoinDetail.displayName = 'CoinDetail';
 
 export default CoinDetail;
