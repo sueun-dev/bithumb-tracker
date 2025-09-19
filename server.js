@@ -20,6 +20,10 @@ const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '127.0.0.1';
 const THIRTY_MINUTES = 30 * 60 * 1000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
+const HTTPS_PORT = process.env.HTTPS_PORT || 443;
+const DISABLE_HTTPS = process.env.DISABLE_HTTPS === 'true';
+const SSL_KEY_PATH = process.env.SSL_KEY || '/etc/ssl/certs/bithumb/server.key';
+const SSL_CERT_PATH = process.env.SSL_CERT || '/etc/ssl/certs/bithumb/server.crt';
 
 // Validate required environment variables in production
 if (NODE_ENV === 'production') {
@@ -1007,34 +1011,49 @@ if (require.main === module) {
     console.log(`📡 HTTP Server running on http://${HOST}:${PORT}`);
   });
 
-  // HTTPS 서버 (프로덕션 환경에서만)
-  if (NODE_ENV === 'production') {
-    try {
-      // 자체 서명 인증서 경로 (GCP 서버에서 생성해야 함)
-      const httpsOptions = {
-        key: fs.readFileSync('/etc/ssl/certs/bithumb/server.key'),
-        cert: fs.readFileSync('/etc/ssl/certs/bithumb/server.crt')
-      };
+  // HTTPS 서버 (프로덕션 환경에서만, DISABLE_HTTPS가 아닌 경우)
+  if (NODE_ENV === 'production' && !DISABLE_HTTPS) {
+    // 인증서 파일 존재 확인
+    if (fs.existsSync(SSL_KEY_PATH) && fs.existsSync(SSL_CERT_PATH)) {
+      try {
+        const httpsOptions = {
+          key: fs.readFileSync(SSL_KEY_PATH),
+          cert: fs.readFileSync(SSL_CERT_PATH)
+        };
 
-      const httpsServer = https.createServer(httpsOptions, serverInstance.app).listen(443, HOST, () => {
-        console.log(`🔒 HTTPS Server running on https://${HOST}:443`);
-      });
+        const httpsServer = https.createServer(httpsOptions, serverInstance.app).listen(HTTPS_PORT, HOST, () => {
+          console.log(`🔒 HTTPS Server running on https://${HOST}:${HTTPS_PORT}`);
+        });
 
-      process.on('SIGINT', () => {
-        console.log('\n🛑 Servers shutting down...');
-        serverInstance.shutdown();
-        server.close();
-        httpsServer.close(() => process.exit(0));
-      });
-    } catch (err) {
-      console.log('⚠️  HTTPS 인증서를 찾을 수 없음. HTTP만 실행됩니다.');
+        process.on('SIGINT', () => {
+          console.log('\n🛑 Servers shutting down...');
+          serverInstance.shutdown();
+          server.close();
+          httpsServer.close(() => process.exit(0));
+        });
+      } catch (err) {
+        console.log('⚠️  HTTPS 서버 시작 실패. HTTP만 실행됩니다.');
+        console.log(`   오류: ${err.message}`);
+
+        process.on('SIGINT', () => {
+          console.log('\n🛑 Server shutting down...');
+          serverInstance.shutdown();
+          server.close(() => process.exit(0));
+        });
+      }
+    } else {
+      console.log('⚠️  SSL 인증서를 찾을 수 없음. HTTP만 실행됩니다.');
+      console.log(`   인증서 경로: ${SSL_KEY_PATH}, ${SSL_CERT_PATH}`);
       console.log('   인증서 생성 방법:');
       console.log('   sudo mkdir -p /etc/ssl/certs/bithumb');
       console.log('   sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \\');
       console.log('     -keyout /etc/ssl/certs/bithumb/server.key \\');
       console.log('     -out /etc/ssl/certs/bithumb/server.crt \\');
-      console.log('     -subj "/C=KR/ST=Seoul/L=Seoul/O=Bithumb/CN=34.44.60.202" \\');
-      console.log('     -addext "subjectAltName=IP:34.44.60.202"');
+      console.log('     -subj "/C=KR/ST=Seoul/L=Seoul/O=Bithumb/CN=34.44.60.202"');
+      console.log('\n   또는 환경변수로 HTTPS 비활성화:');
+      console.log('   DISABLE_HTTPS=true pm2 start server.js');
+      console.log('\n   또는 다른 포트 사용:');
+      console.log('   HTTPS_PORT=8443 pm2 start server.js');
 
       process.on('SIGINT', () => {
         console.log('\n🛑 Server shutting down...');
@@ -1043,6 +1062,10 @@ if (require.main === module) {
       });
     }
   } else {
+    if (DISABLE_HTTPS) {
+      console.log('ℹ️  HTTPS가 비활성화됨 (DISABLE_HTTPS=true)');
+    }
+
     process.on('SIGINT', () => {
       console.log('\n🛑 Server shutting down...');
       serverInstance.shutdown();
