@@ -18,7 +18,7 @@ require('dotenv').config();
 // Configuration with environment variables
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '127.0.0.1';
-const THIRTY_MINUTES = 30 * 60 * 1000;
+const FOUR_HOURS = 4 * 60 * 60 * 1000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const HTTPS_PORT = process.env.HTTPS_PORT || 443;
 const DISABLE_HTTPS = process.env.DISABLE_HTTPS === 'true';
@@ -115,6 +115,7 @@ function createServer(options = {}) {
   const blacklistedIPs = new Set(); // Temporarily block abusive IPs
   const BLACKLIST_DURATION = 60 * 60 * 1000; // 1 hour blacklist
   const MAX_REQUESTS_PER_SECOND = 10; // Per IP per second limit
+  const FOUR_HOURS_LOCAL = FOUR_HOURS; // Use the module-level FOUR_HOURS constant
 
   // Compression middleware - reduces bandwidth usage (DDoS mitigation)
   app.use(compression({
@@ -183,14 +184,18 @@ function createServer(options = {}) {
   app.use((req, res, next) => {
     // Set timeout for all requests (30 seconds)
     req.setTimeout(30000, () => {
-      logger.log(`⏱️ Request timeout for ${getClientIP(req)}`);
-      res.status(408).json({ error: 'Request timeout' });
+      if (!res.headersSent) {
+        logger.log(`⏱️ Request timeout for ${getClientIP(req)}`);
+        res.status(408).json({ error: 'Request timeout' });
+      }
     });
 
     // Set response timeout
     res.setTimeout(30000, () => {
-      logger.log(`⏱️ Response timeout for ${getClientIP(req)}`);
-      res.status(503).json({ error: 'Service unavailable' });
+      if (!res.headersSent) {
+        logger.log(`⏱️ Response timeout for ${getClientIP(req)}`);
+        res.status(503).json({ error: 'Service unavailable' });
+      }
     });
 
     next();
@@ -485,41 +490,51 @@ function createServer(options = {}) {
       }
 
       saveInterval = setIntervalFn(async () => {
-        logger.log('⏰ 30-minute update triggered');
+        logger.log('⏰ 4-hour update triggered');
         try {
           const periodicFetcher = fetcherFactory();
           const updatedData = await periodicFetcher.fetchAll();
 
           if (updatedData && Object.keys(updatedData).length > 0) {
-            // Store previous values before updating
-            previousCache = { ...coinsCache };
+            // Load 4-hour old data for comparison
+            const fourHourOldData = await dataManager.loadDataFromFourHoursAgo();
 
             // Calculate changes for each coin
             Object.keys(updatedData).forEach(symbol => {
               const newData = updatedData[symbol];
-              const oldData = previousCache[symbol];
+              const oldData = fourHourOldData[symbol];
 
               if (oldData) {
-                // Calculate changes for each metric
-                newData.holders_change = calculateChange(newData.holders, oldData.holders);
-                newData.circulation_30min_change = calculateChange(newData.circulation, oldData.circulation);
-                newData.holder_influence_change = calculateChange(newData.holder_influence, oldData.holder_influence);
-                newData.trader_influence_change = calculateChange(newData.trader_influence, oldData.trader_influence);
+                // Calculate changes for each metric (4-hour comparison)
+                newData.holders_change_4h = calculateChange(newData.holders, oldData.holders);
+                newData.circulation_change_4h = calculateChange(newData.circulation, oldData.circulation);
+                newData.holder_influence_change_4h = calculateChange(newData.holder_influence, oldData.holder_influence);
+                newData.trader_influence_change_4h = calculateChange(newData.trader_influence, oldData.trader_influence);
+                newData.purity_change_4h = calculateChange(newData.purity, oldData.purity);
 
-                // Include previous values for comparison
-                newData.prev_holders = oldData.holders;
-                newData.prev_circulation = oldData.circulation;
-                newData.prev_holder_influence = oldData.holder_influence;
-                newData.prev_trader_influence = oldData.trader_influence;
+                // Include 4-hour old values for comparison
+                newData.prev_4h_holders = oldData.holders;
+                newData.prev_4h_circulation = oldData.circulation;
+                newData.prev_4h_holder_influence = oldData.holder_influence;
+                newData.prev_4h_trader_influence = oldData.trader_influence;
+                newData.prev_4h_purity = oldData.purity;
 
                 // Timestamp for last update
+                newData.last_update = new Date().toISOString();
+              } else {
+                // First 4 hours - no previous data, set all changes to null
+                newData.holders_change_4h = null;
+                newData.circulation_change_4h = null;
+                newData.holder_influence_change_4h = null;
+                newData.trader_influence_change_4h = null;
+                newData.purity_change_4h = null;
                 newData.last_update = new Date().toISOString();
               }
             });
 
             coinsCache = updatedData;
             await dataManager.saveData(updatedData);
-            logger.log('✅ Periodic data update saved with change tracking');
+            logger.log('✅ 4-hour data update saved with change tracking');
           }
         } catch (error) {
           logger.error('❌ Error during periodic update');
@@ -528,7 +543,7 @@ function createServer(options = {}) {
         console.error(error);
       }
         }
-      }, THIRTY_MINUTES);
+      }, FOUR_HOURS_LOCAL);
     } catch (error) {
       logger.error('❌ Error initializing data');
       // Never log full error details in production
@@ -876,6 +891,60 @@ function createServer(options = {}) {
       res.status(500).json({ error: 'Service temporarily unavailable' });
     }
   });
+
+  // New endpoint for 4-hour comparison data
+  app.get('/api/comparison',
+    apiLimiter,
+    (req, res) => {
+      try {
+        // Send current cache with 4-hour comparison data
+        const comparisonData = Object.values(coinsCache).map(coin => ({
+          symbol: coin.symbol,
+          code: coin.code,
+          name_kr: coin.name_kr,
+          name_en: coin.name_en,
+
+          // Current values
+          current: {
+            holders: coin.holders,
+            circulation: coin.circulation,
+            holder_influence: coin.holder_influence,
+            trader_influence: coin.trader_influence,
+            purity: coin.purity
+          },
+
+          // 4-hour old values
+          previous_4h: {
+            holders: coin.prev_4h_holders,
+            circulation: coin.prev_4h_circulation,
+            holder_influence: coin.prev_4h_holder_influence,
+            trader_influence: coin.prev_4h_trader_influence,
+            purity: coin.prev_4h_purity
+          },
+
+          // Changes
+          changes_4h: {
+            holders: coin.holders_change_4h,
+            circulation: coin.circulation_change_4h,
+            holder_influence: coin.holder_influence_change_4h,
+            trader_influence: coin.trader_influence_change_4h,
+            purity: coin.purity_change_4h
+          },
+
+          last_update: coin.last_update
+        }));
+
+        res.json({
+          data: comparisonData,
+          count: comparisonData.length,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        logger.error('❌ Error fetching comparison data');
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  );
 
   // Catch-all route for React app - must be after all API routes
   app.get('*',

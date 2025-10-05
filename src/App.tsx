@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import './App.css';
 import { CoinData } from './types';
 import CoinDetail from './CoinDetail';
+import ComparisonPage from './ComparisonPage';
 
 // Theme Management Hook
 const useTheme = () => {
@@ -84,7 +85,7 @@ const FormatPercent = memo<{ percent: string | null }>(({ percent }) => {
 });
 FormatPercent.displayName = 'FormatPercent';
 
-// Memoized Coin Row Component
+// Memoized Coin Row Component for All View
 const CoinRow = memo<{
   coin: CoinData;
   onSelectCoin: (coin: CoinData) => void;
@@ -155,7 +156,65 @@ const CoinRow = memo<{
 });
 CoinRow.displayName = 'CoinRow';
 
-// Memoized Table Header Component
+// Memoized Change Row Component - for 30-minute changes view
+const ChangeRow = memo<{
+  coin: CoinData;
+  onSelectCoin: (coin: CoinData) => void;
+}>(({ coin, onSelectCoin }) => {
+  const handleClick = useCallback(() => {
+    onSelectCoin(coin);
+  }, [coin, onSelectCoin]);
+
+  const formatChange = (change: { absolute: number; percent: string } | null | undefined, isPercentage = false) => {
+    if (!change) return <span className="no-change">변화 없음</span>;
+    const isPositive = Number(change.percent) > 0;
+    const arrow = isPositive ? '↑' : '↓';
+    const className = isPositive ? 'positive' : 'negative';
+
+    return (
+      <span className={className}>
+        {arrow} {Math.abs(change.absolute).toLocaleString('ko-KR')}{isPercentage ? '%p' : ''}
+        <br />
+        ({change.percent}%)
+      </span>
+    );
+  };
+
+  return (
+    <tr onClick={handleClick}>
+      <td>
+        <div className="symbol-cell">
+          <div className="coin-avatar">{coin.symbol.charAt(0)}</div>
+          <span className="symbol">{coin.symbol}</span>
+        </div>
+      </td>
+      <td>
+        <div className="coin-name">
+          <div className="name-kr">{coin.name_kr}</div>
+          <div className="name-en">{coin.name_en}</div>
+        </div>
+      </td>
+      <td className="number change-cell">
+        {formatChange(coin.holders_change)}
+      </td>
+      <td className="number change-cell">
+        {formatChange(coin.circulation_30min_change)}
+      </td>
+      <td className="percent change-cell">
+        {formatChange(coin.holder_influence_change, true)}
+      </td>
+      <td className="percent change-cell">
+        {formatChange(coin.trader_influence_change, true)}
+      </td>
+      <td className="timestamp">
+        {coin.last_update ? new Date(coin.last_update).toLocaleString('ko-KR') : '-'}
+      </td>
+    </tr>
+  );
+});
+ChangeRow.displayName = 'ChangeRow';
+
+// Memoized Table Header Component for All View
 const TableHeader = memo<{
   sortKey: keyof CoinData;
   sortOrder: 'asc' | 'desc';
@@ -189,6 +248,40 @@ const TableHeader = memo<{
 });
 TableHeader.displayName = 'TableHeader';
 
+// Memoized Change Table Header Component
+const ChangeTableHeader = memo<{
+  sortKey: keyof CoinData;
+  sortOrder: 'asc' | 'desc';
+  onSort: (key: keyof CoinData) => void;
+}>(({ sortKey, sortOrder, onSort }) => {
+  const columns: Array<{ key: keyof CoinData; label: string }> = [
+    { key: 'symbol', label: '심볼' },
+    { key: 'name_kr', label: '코인명' },
+    { key: 'holders', label: '보유자 수 변화' },
+    { key: 'circulation', label: '유통량 변화' },
+    { key: 'holder_influence', label: '보유 영향도 변화' },
+    { key: 'trader_influence', label: '거래 영향도 변화' },
+    { key: 'last_update', label: '업데이트 시각' },
+  ];
+
+  return (
+    <thead>
+      <tr>
+        {columns.map(({ key, label }) => (
+          <th
+            key={key}
+            onClick={() => onSort(key)}
+            className="sortable"
+          >
+            {label} {sortKey === key && (sortOrder === 'asc' ? '▲' : '▼')}
+          </th>
+        ))}
+      </tr>
+    </thead>
+  );
+});
+ChangeTableHeader.displayName = 'ChangeTableHeader';
+
 // Debounce hook for search input
 function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState<T>(value);
@@ -220,6 +313,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 30;
   const [selectedCoin, setSelectedCoin] = useState<CoinData | null>(null);
+  const [viewMode, setViewMode] = useState<'all' | 'changes' | 'comparison'>('all');
 
   // Debounce search term to reduce re-renders
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
@@ -231,7 +325,7 @@ function App() {
   const fetchData = useCallback(() => {
     const apiUrl = window.location.hostname === 'localhost'
       ? 'http://localhost:3001/api/stream'
-      : '/api/stream';
+      : 'http://34.44.60.202:3001/api/stream';
     const eventSource = new EventSource(apiUrl);
 
     eventSource.onmessage = (event) => {
@@ -269,52 +363,83 @@ function App() {
 
   // Memoized sort handler
   const handleSort = useCallback((key: keyof CoinData) => {
-    setSortKey(prevKey => {
-      if (prevKey === key) {
-        setSortOrder(prevOrder => prevOrder === 'asc' ? 'desc' : 'asc');
-      } else {
-        setSortOrder('asc');
-      }
-      return key;
-    });
-  }, []);
+    if (sortKey === key) {
+      // 같은 컬럼 클릭 시 정렬 순서 변경
+      setSortOrder(prevOrder => prevOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      // 다른 컬럼 클릭 시 해당 컬럼으로 변경하고 오름차순
+      setSortKey(key);
+      setSortOrder('asc');
+    }
+  }, [sortKey]);
 
   // Memoized filtered and sorted coins
   const filteredAndSortedCoins = useMemo(() => {
-    const filtered = coins.filter(coin =>
+    let filtered = coins.filter(coin =>
       coin.symbol.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
       coin.name_kr.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
       coin.name_en.toLowerCase().includes(debouncedSearchTerm.toLowerCase())
     );
 
+    // Filter for changes view - only show coins with 30-minute changes
+    if (viewMode === 'changes') {
+      filtered = filtered.filter(coin =>
+        coin.holders_change ||
+        coin.circulation_30min_change ||
+        coin.holder_influence_change ||
+        coin.trader_influence_change
+      );
+    }
+
     return filtered.sort((a, b) => {
       const aVal = a[sortKey];
       const bVal = b[sortKey];
-      const numericFields: Array<keyof CoinData> = ['circulation', 'circulation_change', 'holders', 'holder_influence', 'trader_influence'];
+
+      // 숫자 필드 목록
+      const numericFields: Array<keyof CoinData> = [
+        'circulation',
+        'circulation_change',
+        'holders',
+        'holder_influence',
+        'trader_influence'
+      ];
 
       if (numericFields.includes(sortKey)) {
-        // null이나 빈 값 처리
-        if (aVal === null || aVal === undefined || aVal === '') {
-          return sortOrder === 'asc' ? 1 : -1;
-        }
-        if (bVal === null || bVal === undefined || bVal === '') {
-          return sortOrder === 'asc' ? -1 : 1;
-        }
+        // null, undefined, '-', 빈 문자열 처리
+        const isAEmpty = aVal === null || aVal === undefined || aVal === '' || aVal === '-';
+        const isBEmpty = bVal === null || bVal === undefined || bVal === '' || bVal === '-';
 
+        if (isAEmpty && isBEmpty) return 0;
+        if (isAEmpty) return 1; // 빈 값은 항상 마지막으로
+        if (isBEmpty) return -1; // 빈 값은 항상 마지막으로
+
+        // 쉼표와 퍼센트 기호 제거 후 숫자 변환
         const aNum = parseFloat(String(aVal).replace(/,/g, '').replace(/%/g, ''));
         const bNum = parseFloat(String(bVal).replace(/,/g, '').replace(/%/g, ''));
 
-        if (isNaN(aNum)) return sortOrder === 'asc' ? 1 : -1;
-        if (isNaN(bNum)) return sortOrder === 'asc' ? -1 : 1;
+        // NaN 체크
+        if (isNaN(aNum) && isNaN(bNum)) return 0;
+        if (isNaN(aNum)) return 1; // NaN은 항상 마지막으로
+        if (isNaN(bNum)) return -1; // NaN은 항상 마지막으로
 
-        const comparison = aNum - bNum;
+        // 숫자 비교
+        if (aNum < bNum) return sortOrder === 'asc' ? -1 : 1;
+        if (aNum > bNum) return sortOrder === 'asc' ? 1 : -1;
+        return 0;
+      } else {
+        // 문자열 필드 처리
+        const aStr = String(aVal || '');
+        const bStr = String(bVal || '');
+
+        // 빈 문자열 처리
+        if (aStr === '' && bStr === '') return 0;
+        if (aStr === '') return 1; // 빈 값은 항상 마지막으로
+        if (bStr === '') return -1; // 빈 값은 항상 마지막으로
+
+        // 문자열 비교 (한국어 locale)
+        const comparison = aStr.localeCompare(bStr, 'ko-KR');
         return sortOrder === 'asc' ? comparison : -comparison;
       }
-
-      const aStr = String(aVal || '');
-      const bStr = String(bVal || '');
-      const comparison = aStr.localeCompare(bStr, 'ko-KR');
-      return sortOrder === 'asc' ? comparison : -comparison;
     });
   }, [coins, debouncedSearchTerm, sortKey, sortOrder]);
 
@@ -374,10 +499,10 @@ function App() {
           <div className="header-right">
             <div className="header-info">
               <div className="update-info">
-                30분마다 자동 업데이트
+                4시간마다 자동 업데이트
                 {coins.some(c => c.last_update) ? (
                   <span className="last-update-time">
-                    (30분 업데이트: {new Date(coins.find(c => c.last_update)?.last_update || '').toLocaleTimeString('ko-KR')})
+                    (4시간 업데이트: {new Date(coins.find(c => c.last_update)?.last_update || '').toLocaleTimeString('ko-KR')})
                   </span>
                 ) : (
                   <span className="last-update-time">
@@ -397,6 +522,26 @@ function App() {
 
       <div className="controls">
         <div className="controls-inner">
+          <div className="view-mode-toggle">
+            <button
+              className={`view-mode-btn ${viewMode === 'all' ? 'active' : ''}`}
+              onClick={() => setViewMode('all')}
+            >
+              📊 전체 데이터
+            </button>
+            <button
+              className={`view-mode-btn ${viewMode === 'changes' ? 'active' : ''}`}
+              onClick={() => setViewMode('changes')}
+            >
+              📈 4시간 변화 추적
+            </button>
+            <button
+              className={`view-mode-btn ${viewMode === 'comparison' ? 'active' : ''}`}
+              onClick={() => setViewMode('comparison')}
+            >
+              🔄 4시간 비교
+            </button>
+          </div>
           <div className="search-container">
             <input
               type="text"
@@ -418,42 +563,69 @@ function App() {
         </div>
       </div>
 
-      <div className="table-container">
-        <div className="table-wrapper">
-          <table className="coin-table">
-            <TableHeader
-              sortKey={sortKey}
-              sortOrder={sortOrder}
-              onSort={handleSort}
-            />
-            <tbody>
-              {currentCoins.map((coin) => (
-                <CoinRow
-                  key={coin.symbol}
-                  coin={coin}
-                  onSelectCoin={handleSelectCoin}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {viewMode === 'comparison' ? (
+        <ComparisonPage />
+      ) : (
+        <>
+          <div className="table-container">
+            <div className="table-wrapper">
+              <table className="coin-table">
+                {viewMode === 'all' ? (
+                  <>
+                    <TableHeader
+                      sortKey={sortKey}
+                      sortOrder={sortOrder}
+                      onSort={handleSort}
+                    />
+                    <tbody>
+                      {currentCoins.map((coin) => (
+                        <CoinRow
+                          key={coin.symbol}
+                          coin={coin}
+                          onSelectCoin={handleSelectCoin}
+                        />
+                      ))}
+                    </tbody>
+                  </>
+                ) : (
+                  <>
+                    <ChangeTableHeader
+                      sortKey={sortKey}
+                      sortOrder={sortOrder}
+                      onSort={handleSort}
+                    />
+                    <tbody>
+                      {currentCoins.map((coin) => (
+                        <ChangeRow
+                          key={coin.symbol}
+                          coin={coin}
+                          onSelectCoin={handleSelectCoin}
+                        />
+                      ))}
+                    </tbody>
+                  </>
+                )}
+              </table>
+            </div>
+          </div>
 
-      <div className="pagination">
-        <button
-          onClick={handlePrevPage}
-          disabled={currentPage === 1}
-        >
-          이전
-        </button>
-        <span>페이지 {currentPage} / {totalPages || 1}</span>
-        <button
-          onClick={handleNextPage}
-          disabled={currentPage === totalPages || totalPages === 0}
-        >
-          다음
-        </button>
-      </div>
+          <div className="pagination">
+            <button
+              onClick={handlePrevPage}
+              disabled={currentPage === 1}
+            >
+              이전
+            </button>
+            <span>페이지 {currentPage} / {totalPages || 1}</span>
+            <button
+              onClick={handleNextPage}
+              disabled={currentPage === totalPages || totalPages === 0}
+            >
+              다음
+            </button>
+          </div>
+        </>
+      )}
 
       {selectedCoin && (
         <CoinDetail

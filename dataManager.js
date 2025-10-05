@@ -178,6 +178,64 @@ class DataManager {
     }
   }
 
+  // Load data from 4 hours ago for comparison
+  async loadDataFromFourHoursAgo() {
+    await this.ensureInitialized();
+
+    const exists = await this.fileExists(this.csvPath);
+    if (!exists) {
+      console.log('📝 No existing CSV data for 4-hour comparison');
+      return {};
+    }
+
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+
+    return new Promise((resolve, reject) => {
+      const fourHourData = {};
+      let closestTimestamp = null;
+      let smallestDiff = Infinity;
+
+      // First pass: find the closest timestamp to 4 hours ago
+      fsSync.createReadStream(this.csvPath)
+        .pipe(csvParser({
+          mapHeaders: ({ header }) => header.toLowerCase()
+        }))
+        .on('data', (row) => {
+          const rowDate = new Date(row.timestamp);
+          const diff = Math.abs(rowDate - fourHoursAgo);
+
+          if (diff < smallestDiff) {
+            smallestDiff = diff;
+            closestTimestamp = row.timestamp;
+          }
+        })
+        .on('end', () => {
+          if (!closestTimestamp) {
+            console.log('📝 No data found for 4-hour comparison');
+            resolve({});
+            return;
+          }
+
+          // Second pass: collect all data from that timestamp
+          fsSync.createReadStream(this.csvPath)
+            .pipe(csvParser({
+              mapHeaders: ({ header }) => header.toLowerCase()
+            }))
+            .on('data', (row) => {
+              if (row.timestamp === closestTimestamp) {
+                fourHourData[row.symbol] = row;
+              }
+            })
+            .on('end', () => {
+              console.log(`📊 Loaded ${Object.keys(fourHourData).length} coins from 4 hours ago (timestamp: ${closestTimestamp})`);
+              resolve(fourHourData);
+            })
+            .on('error', reject);
+        })
+        .on('error', reject);
+    });
+  }
+
   // Clean old data (keep only last 7 days) - 완전 비동기
   async cleanOldData() {
     try {
